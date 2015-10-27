@@ -1,0 +1,24 @@
+{
+  "name": "zipper-lambda",
+  "version": "1.0.0",
+  "description": "Zips files form S3",
+  "main": "index.js",
+  "dependencies": {
+    "async": "^1.5.0",
+    "aws-sdk": "^2.2.12"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gammasoft/zipper-lambda.git"
+  },
+  "author": "Renato Gama <renato@gammasoft.com.br>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/gammasoft/zipper-lambda/issues"
+  },
+  "homepage": "https://github.com/gammasoft/zipper-lambda"
+}
