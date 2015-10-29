@@ -5,7 +5,8 @@
   "main": "index.js",
   "dependencies": {
     "async": "^1.5.0",
-    "aws-sdk": "^2.2.12"
+    "aws-sdk": "^2.2.12",
+    "request": "^2.65.0"
   },
   "devDependencies": {},
   "scripts": {

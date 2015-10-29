@@ -5,13 +5,22 @@ var Aws = require('aws-sdk'),
 
     fs = require('fs'),
     path = require('path'),
-    childProcess = require('child_process');
+    childProcess = require('child_process'),
 
-function processJob(job) {
+    notificationTypes = require('./notifications');
+
+function processJob(event, context) {
+    if(event.auth !== process.env['SECRET_TOKEN']) {
+        console.log('auth failed with token: ' + event.auth);
+        return context.fail();
+    }
+
     console.log('started processing job');
 
     var filesSize = 0,
-        temporaryDirectoryPath = path.join(__dirname, 'files'),
+        job = event.data,
+        isLambda = context.awsRequestId,
+        temporaryDirectoryPath,
         compressedFilePath,
         compressedFileSize,
         uploadedFileLocation,
@@ -22,6 +31,17 @@ function processJob(job) {
             accessKeyId: job.credentials.accessKeyId,
             secretAccessKey: job.credentials.secretAccessKey
         });
+
+    if(isLambda) {
+        temporaryDirectoryPath = path.join('/tmp', context.awsRequestId);
+
+        process.env['PATH'] = [
+            process.env['PATH'],
+            process.env['LAMBDA_TASK_ROOT']
+        ].join(':');
+    } else {
+         temporaryDirectoryPath = path.join(__dirname, 'files');
+    }
 
     job.files = job.files.map(function(key) {
         var key = key.split('/'),
@@ -44,47 +64,23 @@ function processJob(job) {
 
     job.destination.name = path.basename(job.destination.key);
 
-    function validateFile(header, cb) {
-        var size = parseInt(header.ContentLength, 10);
-        // TODO: Add max file size validation
-
-        filesSize += size;
-        cb();
-    }
-
-    function getHeaders(cb) {
-        async.eachSeries(job.files, function(file, cb) {
-            console.log('downloading headers from %s', file.fullKey);
-
-            s3client.headObject({
-                Bucket: file.bucket,
-                Key: file.key
-            }, function(err, header) {
-                if(err) {
-                    cnosole.log('error obtaining file header');
-                    return cb(err);
-                }
-
-                validateFile(header, cb);
-            });
-        }, function(err) {
-            if(err) {
-                console.log('error downloading headers');
-                return cb(err);
-            }
-
-            // TODO: Add max total size validation
-            console.log('total size to compress is %s', filesSize);
-            cb();
-        });
-    }
-
     function createFilesFolder(cb) {
+        console.log('creating files folder at %s', temporaryDirectoryPath);
+
         var mkdir = childProcess.spawn('mkdir', [
             temporaryDirectoryPath
         ], {
             cwd: __dirname
         });
+
+        mkdir.stdout.on('data', function(data) {
+            console.log(data.toString().trim());
+        });
+
+        mkdir.stderr.on('data', function(data) {
+            console.log(data.toString().trim());
+        });
+
 
         mkdir.on('close', function(exitCode) {
             if(exitCode !== 0) {
@@ -100,7 +96,7 @@ function processJob(job) {
     function downloadFiles(cb) {
         console.log('downloading %s files', job.files.length);
 
-        async.eachSeries(job.files, function(file, cb) {
+        async.eachLimit(job.files, 50, function(file, cb) {
             console.log('downloading file %s', file.fullKey);
 
             var fileDownload = s3client.getObject({
@@ -116,12 +112,12 @@ function processJob(job) {
             var bytesReceived = 0;
             fileDownload.on('data', function(chunk) {
                 bytesReceived += chunk.length;
+                filesSize += bytesReceived;
                 console.log('received %s', bytesReceived);
             });
 
             fileDownload.on('end', function() {
                 console.log('download completed');
-                // zipFile(filePath, cb);
                 cb();
             });
         }, function(err) {
@@ -129,8 +125,6 @@ function processJob(job) {
                 console.log('error downloading files');
                 return cb(err);
             }
-
-            compressedFilePath = path.join(temporaryDirectoryPath, job.destination.name);
 
             console.log('all downloads completed');
             cb();
@@ -152,8 +146,8 @@ function processJob(job) {
             console.log(data.toString().trim());
         });
 
-        zip.stderr.on('data', function() {
-            console.log( data.toString().trim());
+        zip.stderr.on('data', function(data) {
+            console.log(data.toString().trim());
         });
 
         zip.on('close', function(exitCode) {
@@ -178,10 +172,10 @@ function processJob(job) {
             }
 
             compressedFileSize = stats.size;
-            var compressionEfficiency = ((1 - compressedFileSize/filesSize) * 100).toFixed(2);
+            var compressionEfficiency = ((1 - compressedFileSize / filesSize) * 100).toFixed(2);
 
             console.log('compressed file size is %s', compressedFileSize);
-            console.log('original file was compressed by %s%', compressionEfficiency);
+            console.log('original files were compressed by %s%', compressionEfficiency);
 
             cb();
         });
@@ -220,12 +214,12 @@ function processJob(job) {
         }
 
         console.log('sending %s notifications', job.notifications.length);
-        async.eachSeries(job.notifications, function(notification, cb) {
+        async.eachLimit(job.notifications, 10, function(notification, cb) {
             var notificationType = notification.type.toLowerCase(),
                 notificationStrategy = notificationTypes[notificationType];
 
             if(!notificationStrategy) {
-                console.log('unkown notification type "%s"', notificationType);
+                console.log('unkown notification type "%s" - skipping', notificationType);
                 return cb();
             }
 
@@ -237,14 +231,21 @@ function processJob(job) {
                     size: compressedFileSize,
                     status: 'success'
                 }
-            }, cb);
+            }, function(err) {
+                if(err) {
+                    console.log('failed to send notification:');
+                    console.log(JSON.stringify(notification, null, 4));
+                    console.log(err);
+                }
+
+                return cb();
+            });
         }, cb);
     }
 
     var startTime = new Date();
 
     async.series([
-        getHeaders,
         createFilesFolder,
         downloadFiles,
         createCompressedFile,
@@ -252,15 +253,17 @@ function processJob(job) {
         uploadCompressedFile,
         sendNotifications
     ], function(err) {
-        if(err) {
-            // TODO: Send fail notification
-
-            console.log('error processing job');
-            console.log(err);
-        }
-
         var jobTime = new Date() - startTime;
         console.log('job completed in %s', jobTime);
+
+        if(err) {
+            // TODO: Send fail notifications
+            console.log('job processing failed');
+            console.log(err);
+            return context.fail();
+        }
+
+        context.succeed();
     });
 }
 
