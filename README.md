@@ -1,2 +1,2 @@
 # zipper-lambda
-Extends gammasoft/zipper with the ability to run as a lambda function in AWS
+Amazon Lambda function that will zip files from Amazon S3 and then re-upload the resulting zip file
